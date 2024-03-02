@@ -18,10 +18,15 @@ import type {
 import md5 from './md5.js';
 import { WebSocketFields } from './snapshot.js';
 import { joinHeaders, splitHeaders } from './splitHeaderUtil.js';
+import { BareTransport, TransferrableResponse } from "@mercuryworkshop/bare-mux";
 
-export default class ClientV3 extends Client {
+export default class ClientV3 extends Client implements BareTransport {
 	ws: URL;
 	http: URL;
+
+	meta() {
+		return {};
+	}
 	constructor(server: URL) {
 		super(3, server);
 
@@ -34,13 +39,20 @@ export default class ClientV3 extends Client {
 			this.ws.protocol = 'ws:';
 		}
 	}
+	ready = true;
+	async init() {
+		this.ready = true;
+	}
 	connect(
-		remote: URL,
+		url: URL,
+		origin: string,
 		protocols: string[],
-		getRequestHeaders: GetRequestHeadersCallback,
-		onMeta: MetaCallback,
-		onReadyState: ReadyStateCallback
-	) {
+		requestHeaders: BareHeaders,
+		onopen: (protocol: string) => void,
+		onmessage: (data: Blob | ArrayBuffer | string) => void,
+		onclose: (code: number, reason: string) => void,
+		onerror: (error: string) => void,
+	): (data: Blob | ArrayBuffer | string) => void {
 		const ws = new WebSocket(this.ws);
 
 		const cleanup = () => {
@@ -65,17 +77,18 @@ export default class ClientV3 extends Client {
 			if (message.type !== 'open')
 				throw new TypeError('message was not of open type');
 
-			event.stopImmediatePropagation();
+			// onMeta({
+			// 	protocol: message.protocol,
+			// 	setCookies: message.setCookies,
+			// });
 
-			onMeta({
-				protocol: message.protocol,
-				setCookies: message.setCookies,
+
+			onopen(message.protocol);
+
+			// TODO
+			ws.addEventListener("message", (ev) => {
+				onmessage(ev.data);
 			});
-
-			// now we want the client to see the websocket is open and ready to communicate with the remote
-			onReadyState(WebSocketFields.OPEN);
-
-			ws.dispatchEvent(new Event('open'));
 		};
 
 		ws.addEventListener('close', closeListener);
@@ -85,88 +98,47 @@ export default class ClientV3 extends Client {
 		ws.addEventListener(
 			'open',
 			(event) => {
-				// we have to cancel this event because it doesn't reflect the connection to the remote
-				// once we are actually connected to the remote, we can dispatch a fake open event.
-				event.stopImmediatePropagation();
 
-				// we need to fake the readyState value again so it remains CONNECTING
-				// right now, it's open because we just connected to the remote
-				// but we need to fake this from the client so it thinks it's still connecting
-				onReadyState(WebSocketFields.CONNECTING);
-
-				getRequestHeaders().then((headers) =>
-					WebSocketFields.prototype.send.call(
-						ws,
-						JSON.stringify({
-							type: 'connect',
-							remote: remote.toString(),
-							protocols,
-							headers,
-							forwardHeaders: [],
-						} as SocketClientToServer)
-					)
-				);
+				// getRequestHeaders().then((headers:any) =>
+				WebSocketFields.prototype.send.call(
+					ws,
+					JSON.stringify({
+						type: 'connect',
+						remote: url.toString(),
+						protocols,
+						headers: requestHeaders,
+						forwardHeaders: [],
+					} as unknown as SocketClientToServer)
+				)
+				// );
 			},
 			// only block the open event once
 			{ once: true }
 		);
 
-		return ws;
+
+		return ws.send.bind(ws);
 	}
 	async request(
-		method: BareMethod,
-		requestHeaders: BareHeaders,
-		body: BodyInit | null,
 		remote: URL,
-		cache: BareCache | undefined,
-		duplex: string | undefined,
+		method: BareMethod,
+		body: BodyInit | null,
+		headers: BareHeaders,
 		signal: AbortSignal | undefined
-	): Promise<BareResponse> {
-		if (remote.protocol.startsWith('blob:')) {
-			const response = await fetch(remote);
-			const result: Response & Partial<BareResponse> = new Response(
-				response.body,
-				response
-			);
-
-			result.rawHeaders = Object.fromEntries(response.headers);
-			result.rawResponse = response;
-
-			return result as BareResponse;
-		}
-
-		const bareHeaders: BareHeaders = {};
-
-		if (requestHeaders instanceof Headers) {
-			for (const [header, value] of requestHeaders) {
-				bareHeaders[header] = value;
-			}
-		} else {
-			for (const header in requestHeaders) {
-				bareHeaders[header] = requestHeaders[header];
-			}
-		}
-
+	): Promise<TransferrableResponse> {
 		const options: RequestInit = {
 			credentials: 'omit',
 			method: method,
 			signal,
 		};
 
-		if (cache !== 'only-if-cached') {
-			options.cache = cache as RequestCache;
-		}
 
 		if (body !== undefined) {
 			options.body = body;
 		}
 
-		if (duplex !== undefined) {
-			// @ts-ignore
-			options.duplex = duplex;
-		}
 
-		options.headers = this.createBareHeaders(remote, bareHeaders);
+		options.headers = this.createBareHeaders(remote, headers);
 
 		const response = await fetch(
 			this.http + '?cache=' + md5(remote.toString()),
@@ -175,20 +147,26 @@ export default class ClientV3 extends Client {
 
 		const readResponse = await this.readBareResponse(response);
 
-		const result: Response & Partial<BareResponse> = new Response(
-			statusEmpty.includes(readResponse.status!) ? undefined : response.body,
-			{
-				status: readResponse.status,
-				statusText: readResponse.statusText ?? undefined,
-				headers: new Headers(readResponse.headers as HeadersInit),
-			}
-		);
+		// const result: Response & Partial<BareResponse> = new Response(
+		// 	statusEmpty.includes(readResponse.status!) ? undefined : response.body,
+		// 	{
+		// 		status: readResponse.status,
+		// 		statusText: readResponse.statusText ?? undefined,
+		// 		headers: new Headers(readResponse.headers as HeadersInit),
+		// 	}
+		// );
+		//
+		// result.rawHeaders = readResponse.headers;
+		// result.rawResponse = response;
 
-		result.rawHeaders = readResponse.headers;
-		result.rawResponse = response;
-
-		return result as BareResponse;
+		return {
+			body: response.body!,
+			headers: readResponse.headers,
+			status: readResponse.status,
+			statusText: readResponse.statusText,
+		};
 	}
+
 	private async readBareResponse(response: Response) {
 		if (!response.ok) {
 			throw new BareError(response.status, await response.json());

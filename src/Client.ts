@@ -29,28 +29,11 @@ export class BareError extends Error {
 export type MetaCallback = (meta: BareWebSocketMeta) => void;
 export type ReadyStateCallback = (readyState: number) => void;
 export type WebSocketImpl = {
-	new (...args: ConstructorParameters<typeof WebSocket>): WebSocket;
+	new(...args: ConstructorParameters<typeof WebSocket>): WebSocket;
 };
 export type GetRequestHeadersCallback = () => Promise<BareHeaders>;
 
 export abstract class Client {
-	abstract connect(
-		remote: URL,
-		protocols: string[],
-		getRequestHeaders: GetRequestHeadersCallback,
-		onMeta: MetaCallback,
-		onReadyState: ReadyStateCallback,
-		webSocketImpl: WebSocketImpl
-	): WebSocket;
-	abstract request(
-		method: BareMethod,
-		requestHeaders: BareHeaders,
-		body: BodyInit | null,
-		remote: URL,
-		cache: BareCache | undefined,
-		duplex: string | undefined,
-		signal: AbortSignal | undefined
-	): Promise<BareResponse>;
 	protected base: URL;
 	/**
 	 *
